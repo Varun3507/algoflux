@@ -24,6 +24,8 @@ from sklearn import preprocessing, model_selection, svm
 
 
 
+
+
 # The Home page when Server loads up
 def index(request):
     # ================================================= Left Card Plot =========================================================
@@ -180,32 +182,103 @@ def predict(request, ticker_value, number_of_days):
     # ========================================== Machine Learning ==========================================
 
 
-    try:
-        df_ml = yf.download(tickers = ticker_value, period='3mo', interval='1h')
-    except:
-        ticker_value = 'AAPL'
-        df_ml = yf.download(tickers = ticker_value, period='3mo', interval='1m')
+    # try:
+    #     df_ml = yf.download(tickers = ticker_value, period='3mo', interval='1h')
+    # except:
+    #     ticker_value = 'AAPL'
+    #     df_ml = yf.download(tickers = ticker_value, period='3mo', interval='1m')
 
-    # Fetching ticker values from Yahoo Finance API 
-    df_ml = df_ml[['Adj Close']]
+    # # Fetching ticker values from Yahoo Finance API 
+    # df_ml = df_ml[['Adj Close']]
+    # forecast_out = int(number_of_days)
+    # df_ml['Prediction'] = df_ml[['Adj Close']].shift(-forecast_out)
+    # # Splitting data for Test and Train
+    # X = np.array(df_ml.drop(['Prediction'],1))
+    # X = preprocessing.scale(X)
+    # X_forecast = X[-forecast_out:]
+    # X = X[:-forecast_out]
+    # y = np.array(df_ml['Prediction'])
+    # y = y[:-forecast_out]
+    # X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y, test_size = 0.2)
+    # # Applying Linear Regression
+    # clf = LinearRegression()
+    # clf.fit(X_train,y_train)
+    # # Prediction Score
+    # confidence = clf.score(X_test, y_test)
+    # # Predicting for 'n' days stock data
+    # forecast_prediction = clf.predict(X_forecast)
+    # forecast = forecast_prediction.tolist()
+    
+        # ========================================== Machine Learning ==========================================
+    # Download ML data (use hourly or minute interval depending on availability)
+    try:
+        df_ml = yf.download(tickers=ticker_value, period='3mo', interval='1h', progress=False)
+    except Exception:
+        # fallback to a known good ticker to avoid hard crash (but inform user)
+        return render(request, 'API_Down.html', {"error": f"Failed to download data for {ticker_value}."})
+
+    # Keep only the Adj Close column and check data
+    if df_ml is None or df_ml.empty:
+        return render(request, "Invalid_Ticker.html", {"error": f"No historical data found for ticker '{ticker_value}'."})
+
+    if 'Adj Close' not in df_ml.columns:
+        return render(request, "Invalid_Ticker.html", {"error": f"'Adj Close' column not found for ticker '{ticker_value}'."})
+
+    df_ml = df_ml[['Adj Close']].copy()
+
+    # forecast_out is number_of_days requested
     forecast_out = int(number_of_days)
+
+    # If there are not enough samples to shift by forecast_out, inform user
+    n_rows = df_ml.shape[0]
+    if n_rows <= forecast_out:
+        # Option A: return an error page asking user to request fewer days
+        return render(request, "Invalid_Days_Format.html", {
+            "error": f"Requested forecast horizon ({forecast_out}) is larger than available samples ({n_rows}). Try a smaller number of days."
+        })
+
+        # Option B (alternate): automatically reduce forecast_out to feasible maximum
+        # forecast_out = max(1, n_rows - 1)
+
+    # create the prediction column (shift up by forecast_out)
     df_ml['Prediction'] = df_ml[['Adj Close']].shift(-forecast_out)
-    # Splitting data for Test and Train
-    X = np.array(df_ml.drop(['Prediction'],1))
+
+    # Prepare feature matrix X and target y safely
+    # NOTE: use axis=1 to avoid deprecation warning
+    X = np.array(df_ml.drop(['Prediction'], axis=1))
+
+    # Defensive: ensure X is not empty
+    if X.size == 0 or X.shape[0] == 0:
+        return render(request, "Invalid_Ticker.html", {"error": f"No usable feature samples for {ticker_value}."})
+
+    # Scale features
     X = preprocessing.scale(X)
-    X_forecast = X[-forecast_out:]
-    X = X[:-forecast_out]
+
+    # Prepare forecast set and training set
+    X_forecast = X[-forecast_out:]           # rows we will predict
+    X = X[:-forecast_out]                    # rows to train on
+
     y = np.array(df_ml['Prediction'])
-    y = y[:-forecast_out]
-    X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y, test_size = 0.2)
-    # Applying Linear Regression
+    y = y[:-forecast_out]                    # align with X
+
+    # Final guards: make sure there is at least one sample to train/test
+    if X.shape[0] < 1 or y.shape[0] < 1:
+        return render(request, "Invalid_Ticker.html", {"error": "Not enough data after preparing training and label arrays."})
+
+    # Now split & train
+    X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y, test_size=0.2)
+
+    # If splitting produced empty training or test sets (defensive)
+    if X_train.shape[0] == 0 or y_train.shape[0] == 0:
+        return render(request, "Invalid_Ticker.html", {"error": "Insufficient data to train model for this ticker and forecast horizon."})
+
     clf = LinearRegression()
-    clf.fit(X_train,y_train)
-    # Prediction Score
+    clf.fit(X_train, y_train)
+
     confidence = clf.score(X_test, y_test)
-    # Predicting for 'n' days stock data
     forecast_prediction = clf.predict(X_forecast)
     forecast = forecast_prediction.tolist()
+
 
 
     # ========================================== Plotting predicted data ======================================
